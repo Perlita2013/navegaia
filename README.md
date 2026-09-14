@@ -99,3 +99,27 @@ Configurar `sk_test_*`, precio recurrente Pro (`STRIPE_PRO_PRICE_ID`) y firma de
 **Siguiente paso:** conectar Supabase y Vercel, aplicar migraciones y publicar en URL temporal. Después conectar proveedores, confirmar 2FA con dispositivos reales y completar validación de precisión documental y entrega de correos. La publicación en `navegaia.cl` depende de la compra y configuración del dominio.
 
 Referencias técnicas consultadas: [Supabase TOTP](https://supabase.com/docs/guides/auth/auth-mfa/totp), [Azure Read](https://learn.microsoft.com/en-us/azure/ai-services/document-intelligence/prebuilt/read?view=doc-intel-4.0.0), documentación local instalada de Next.js 16.3.5.
+
+## Actualización comercial · septiembre 2026
+
+Landing con cuatro planes, FAQ desplegable y navegación móvil. Precios de lanzamiento definidos para revisión comercial (no investigación de mercado): Emprende $49.900, Crece $129.900, Empresa $279.900 CLP/mes + IVA; Corporativo por cotización. Contrato de 12 meses, pago mensual; contratación asistida mediante contacto@stardesign.cl. No se generan cobros ni contratos legalmente aceptados al cambiar una fila en Owner. La IA y los emails requieren activación y cotización adicional. El antiguo checkout por usuario está deshabilitado.
+
+Aplicar migraciones **001, 002 y 003** en Supabase, en ese orden. Las variables de conexión de cuentas continúan siendo necesarias. La nueva migración agrega cupos comerciales, acceso comercial de plataforma y auditoría. El mes se calcula en America/Santiago; los registros de documentos cancelados conservan consumo. La suspensión comercial bloquea altas nuevas; conserva consultas y el trabajo sobre registros existentes. Los contratos se gestionan manualmente; las fechas no ejecutan renovación, suspensión ni cobros automáticos.
+
+- `/owner`: panel real; requiere contraseña, MFA y una fila administrativa en `platform_owners`.
+- `/owner?demo=1`: empresas ficticias y cambios solo en memoria, jamás llama a la API de Owner.
+- `/login?next=owner`: entrada directa al panel después de MFA.
+- Gerente: supervisión y altas de ejecutivos/importadores de su empresa; el administrador de empresa (`owner` heredado) también puede agregar gerentes.
+
+Para activar a la dueña, crear/confirmar su cuenta en Supabase Auth y verificar personalmente su UUID. Luego ejecutar en el SQL Editor administrativo (sustituir el marcador):
+
+```sql
+insert into public.platform_owners(user_id)
+select id from auth.users
+where id = 'UUID_CONFIRMADO_DE_LA_DUENA'::uuid
+  and email_confirmed_at is not null;
+```
+
+Nunca asignar Owner de plataforma mediante registro público o metadatos editables. Esta identidad puede permanecer sin empresa. No usar service_role en las rutas de usuario. El panel comercial expone resúmenes de consumo y nombres/roles de usuarios mediante RPC restringida y auditada; no otorga lectura transversal de BL, documentos ni Storage. El registro de empresas se completa desde el onboarding del administrador de cada empresa. Aplicar `003` antes de activar el panel; un despliegue en Render por sí solo no ejecuta SQL en Supabase.
+
+Validación: `npm test` (RLS, extracción y demurrage), `npm run typecheck`, `npm run build`. Los tests de RLS ejecutan PostgreSQL embebido PGlite, no el proyecto Supabase real. No confundir compilación con validación de credenciales o pagos.

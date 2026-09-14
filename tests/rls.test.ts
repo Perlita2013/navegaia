@@ -19,12 +19,14 @@ test('RLS en PostgreSQL real embebido: aislamiento, roles, MFA, Storage y audito
  `);
  await db.exec(await readFile(new URL('../supabase/migrations/001_core.sql',import.meta.url),'utf8'));
  await db.exec(await readFile(new URL('../supabase/migrations/002_jobs.sql',import.meta.url),'utf8'));
+ await db.exec(await readFile(new URL('../supabase/migrations/003_commercial.sql',import.meta.url),'utf8'));
  const A='10000000-0000-4000-8000-000000000001',B='10000000-0000-4000-8000-000000000002';
  const ownerA='20000000-0000-4000-8000-000000000001',ownerB='20000000-0000-4000-8000-000000000002',importerA='20000000-0000-4000-8000-000000000003',importerB='20000000-0000-4000-8000-000000000004',execA='20000000-0000-4000-8000-000000000005',newUser='20000000-0000-4000-8000-000000000006';
  const sA='30000000-0000-4000-8000-000000000001',sB='30000000-0000-4000-8000-000000000002',sOther='30000000-0000-4000-8000-000000000003';
  const dA='40000000-0000-4000-8000-000000000001',dHidden='40000000-0000-4000-8000-000000000002',dB='40000000-0000-4000-8000-000000000003';
  await db.exec(`insert into auth.users values ('${ownerA}','owner-a@example.test',now()),('${ownerB}','owner-b@example.test',now()),('${importerA}','importer-a@example.test',now()),('${importerB}','importer-b@example.test',now()),('${execA}','exec-a@example.test',now()),('${newUser}','new@example.test',now());
  insert into public.empresas(id,nombre) values('${A}','Agencia A'),('${B}','Agencia B');
+ update public.empresas set limite_usuarios=5 where id='${A}';
  insert into public.usuarios(id,empresa_id,nombre,rol) values('${ownerA}','${A}','Owner A','owner'),('${ownerB}','${B}','Owner B','owner'),('${importerA}','${A}','Importador A','importador'),('${importerB}','${B}','Importador B','importador'),('${execA}','${A}','Ejecutivo A','ejecutivo');
  insert into public.embarques(id,empresa_id,referencia,bl,importador,importador_id,naviera,puerto,origen,eta) values('${sA}','${A}','A-1','BL-A','Cliente A','${importerA}','ONE','San Antonio','Busan','2026-09-01'),('${sB}','${B}','B-1','BL-B','Cliente B','${importerB}','MSC','Valparaíso','Busan','2026-09-01'),('${sOther}','${A}','A-2','BL-A2','Otro cliente',null,'ONE','San Antonio','Busan','2026-09-01');
  insert into public.documentos(id,empresa_id,embarque_id,nombre,ruta,tipo,visible_importador) values('${dA}','${A}','${sA}','A.pdf','${A}/${dA}.pdf','BL',true),('${dHidden}','${A}','${sA}','Interno.pdf','${A}/${dHidden}.pdf','BL',false),('${dB}','${B}','${sB}','B.pdf','${B}/${dB}.pdf','BL',true);
@@ -38,6 +40,28 @@ test('RLS en PostgreSQL real embebido: aislamiento, roles, MFA, Storage y audito
  await t.test('owner solo añade miembros a su empresa; no reasigna identidades existentes',async()=>{await as(ownerA);await db.exec("select public.add_member('new@example.test','gerente')");assert.equal((await db.query<{empresa_id:string}>(`select empresa_id from public.usuarios where id='${newUser}'`)).rows[0].empresa_id,A);await assert.rejects(db.exec("select public.add_member('owner-b@example.test','gerente')"))});
  await t.test('bloquea vínculos y movimientos entre tenants',async()=>{await as(ownerA);await assert.rejects(db.exec(`update public.embarques set importador_id='${importerB}' where id='${sA}'`));await assert.rejects(db.exec(`update public.embarques set empresa_id='${B}' where id='${sA}'`));await assert.rejects(db.exec(`update public.documentos set embarque_id='${sB}' where id='${dA}'`));await assert.rejects(db.exec(`update public.documentos set ruta='${B}/${dA}.pdf' where id='${dA}'`));await assert.rejects(db.exec(`insert into storage.objects(bucket_id,name) values('documentos','${B}/forged.pdf')`))});
  await t.test('cambio permitido genera eventos y audit log sin inserts desde cliente',async()=>{await as(ownerA);const before=await count('public.audit_log');await db.exec(`update public.embarques set estado='arribo' where id='${sA}'`);assert.equal(await count('public.audit_log'),before+1);assert.equal((await db.query(`select id from public.eventos where embarque_id='${sA}' and accion like 'Estado actualizado%'`)).rows.length,1)});
- await t.test('todas las tablas públicas y storage.objects tienen RLS',async()=>{await db.exec('reset role');const r=await db.query<{relname:string;relrowsecurity:boolean}>("select c.relname,c.relrowsecurity from pg_class c join pg_namespace n on c.relnamespace=n.oid where n.nspname='public' and c.relkind='r'");assert.equal(r.rows.length,8);assert.ok(r.rows.every(x=>x.relrowsecurity))});
+ await t.test('todas las tablas públicas y storage.objects tienen RLS',async()=>{await db.exec('reset role');const r=await db.query<{relname:string;relrowsecurity:boolean}>("select c.relname,c.relrowsecurity from pg_class c join pg_namespace n on c.relnamespace=n.oid where n.nspname='public' and c.relkind='r'");assert.equal(r.rows.length,10);assert.ok(r.rows.every(x=>x.relrowsecurity))});
+
+ await t.test('nadie se autoasigna Owner de plataforma ni consulta otros clientes',async()=>{
+  for(const id of [ownerA,execA,importerA,newUser]){await as(id);assert.equal((await db.query<{ok:boolean}>('select public.platform_access() ok')).rows[0].ok,false);await assert.rejects(db.exec('select public.platform_overview()'));await assert.rejects(db.exec(`insert into public.platform_owners(user_id) values('${id}')`));await assert.rejects(db.exec(`select public.platform_update_company('${B}','crece','activo','2026-09-01')`));await assert.rejects(db.exec(`select private.usage_summary('${B}')`));assert.equal(await count('public.platform_audit'),0)}
+ });
+ const platform='20000000-0000-4000-8000-000000000099';
+ await db.exec('reset role');await db.exec(`insert into auth.users values('${platform}','platform@example.test',now());insert into public.platform_owners(user_id) values('${platform}')`);
+ await t.test('Owner comercial requiere MFA y no obtiene documentos de clientes',async()=>{
+  await as(platform,'aal1');assert.equal(await count('public.platform_owners'),0);await assert.rejects(db.exec('select public.platform_overview()'));
+  await as(platform);const result=(await db.query<{value:{clientes:{id:string;ejecutivos:number}[]}}>('select public.platform_overview() value')).rows[0].value;assert.equal(result.clientes.length,2);assert.equal(result.clientes.find(c=>c.id===A)?.ejecutivos,1);assert.equal(await count('public.embarques'),0);assert.equal(await count('public.documentos'),0);assert.equal(await count('storage.objects'),0);assert.equal(await count('public.platform_audit'),1);
+  await db.exec(`select public.platform_update_company('${A}','crece','activo','2026-09-01')`);assert.equal(await count('public.platform_audit'),2);await assert.rejects(db.exec(`select public.platform_update_company('${A}','emprende','activo','2026-09-01')`));
+  await as(ownerA);const u=(await db.query<{v:{plan:string;limite_usuarios:number}}>('select public.company_usage() v')).rows[0].v;assert.equal(u.plan,'crece');assert.equal(u.limite_usuarios,5);
+ });
+ await t.test('cupos por tenant impiden altas, fechas falsificadas y devolución al borrar',async()=>{
+  await db.exec('reset role');await db.exec(`update public.empresas set limite_embarques=2,limite_documentos=2,limite_usuarios=3 where id='${A}'`);
+  await as(execA);await assert.rejects(db.exec(`insert into public.embarques(empresa_id,referencia,bl,importador,naviera,puerto,origen,eta,created_at) values('${A}','exceso','x','x','x','x','x','2026-09-01','2000-01-01')`));
+  await assert.rejects(db.exec(`insert into public.documentos(empresa_id,embarque_id,nombre,ruta,tipo) values('${A}','${sA}','extra.pdf','${A}/00000000-0000-4000-8000-000000000000.pdf','BL')`));
+  await db.exec(`delete from public.documentos where id='${dHidden}'`);
+  await as(ownerA);const u=(await db.query<{v:{documentos:number}}>('select public.company_usage() v')).rows[0].v;assert.equal(u.documentos,2);
+  await db.exec(`update public.embarques set estado='presentado' where id='${sA}'`);
+  await as(platform);await db.exec(`select public.platform_update_company('${B}','emprende','suspendido',null)`);
+  await as(ownerB);assert.equal(await count('public.embarques'),1);await assert.rejects(db.exec(`insert into public.embarques(empresa_id,referencia,bl,importador,naviera,puerto,origen,eta) values('${B}','suspendido','x','x','x','x','x','2026-09-01')`));
+ });
  await db.close();
 });
